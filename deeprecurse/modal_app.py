@@ -1,19 +1,21 @@
-"""Modal App that runs TranscriptRLM with S3-mounted transcripts.
+"""Modal App that runs TranscriptRLM with a persistent Modal Volume.
 
-Bucket layout:
-    s3://deeprecurse-transcripts/{repo}/{session_id}/turn-001.json
-                                                   /turn-002.json
+Volume layout:
+    /transcripts/{repo}/{session_id}/turn-001.json
+                                    /turn-002.json
 
-Mounted at /transcripts inside the container, so the TranscriptRLM
-gets transcript_dir="/transcripts/{repo}".
+Setup:
+    modal volume create deeprecurse-transcripts
+    modal secret create openai-secret OPENAI_API_KEY=sk-...
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import modal
 
 from deeprecurse.config import (
-    BUCKET_NAME,
     MAX_ITERATIONS,
     MODAL_APP_NAME,
     MODAL_IMAGE_PYTHON,
@@ -21,34 +23,35 @@ from deeprecurse.config import (
     MOUNT_PATH,
     RECURSIVE_MODEL,
     ROOT_MODEL,
+    VOLUME_NAME,
 )
 
 app = modal.App(MODAL_APP_NAME)
 
+_here = Path(__file__).resolve().parent  # deeprecurse/
+_project_root = _here.parent  # DeepRecurse/
+
 image = (
     modal.Image.debian_slim(python_version=MODAL_IMAGE_PYTHON)
-    .pip_install("openai", "python-dotenv", "rich")
+    .uv_pip_install("openai", "python-dotenv", "rich")
+    .env({"PYTHONPATH": "/root"})
     .add_local_dir(
-        "rlm-minimal/rlm",
-        remote_path="/root/rlm-minimal/rlm",
+        _project_root / "rlm" / "rlm",
+        remote_path="/root/rlm",
     )
     .add_local_dir(
-        "deeprecurse",
+        _project_root / "deeprecurse",
         remote_path="/root/deeprecurse",
     )
 )
 
-bucket_mount = modal.CloudBucketMount(
-    bucket_name=BUCKET_NAME,
-    secret=modal.Secret.from_name(MODAL_SECRET_NAME),
-    read_only=True,
-)
+volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name(MODAL_SECRET_NAME)],
-    volumes={MOUNT_PATH: bucket_mount},
+    volumes={MOUNT_PATH: volume},
     timeout=600,
 )
 def run_query(query: str, repo: str) -> str:
@@ -56,16 +59,11 @@ def run_query(query: str, repo: str) -> str:
 
     Args:
         query: The natural-language question to answer.
-        repo: Repository name — maps to subdirectory inside the bucket.
+        repo: Repository name — subdirectory inside the volume.
 
     Returns:
         The final answer string from RLM.
     """
-    import sys
-
-    sys.path.insert(0, "/root/rlm-minimal")
-    sys.path.insert(0, "/root")
-
     from deeprecurse.rlm_runner import TranscriptRLM
 
     transcript_dir = f"{MOUNT_PATH}/{repo}"
@@ -80,7 +78,7 @@ def run_query(query: str, repo: str) -> str:
 
     sessions = rlm._list_sessions()
     context = (
-        f"Transcript store mounted at {transcript_dir}\n"
+        f"Transcript store at {transcript_dir}\n"
         f"Available sessions: {sessions}\n"
         f"Use the transcript helper functions to explore the data."
     )
@@ -90,13 +88,54 @@ def run_query(query: str, repo: str) -> str:
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(MODAL_SECRET_NAME)],
-    volumes={MOUNT_PATH: bucket_mount},
+    volumes={MOUNT_PATH: volume},
+    timeout=60,
+)
+def store_transcript(turns: list[dict], repo: str, session_id: str) -> list[str]:
+    """Write parsed transcript turns to the Modal Volume.
+
+    Args:
+        turns: List of dicts with "role" and "content" keys.
+        repo: Repository name.
+        session_id: Session identifier.
+
+    Returns:
+        List of file paths written.
+    """
+    import json
+    import os
+    from datetime import datetime, timezone
+
+    session_dir = f"{MOUNT_PATH}/{repo}/{session_id}"
+    os.makedirs(session_dir, exist_ok=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+    paths: list[str] = []
+
+    for i, turn in enumerate(turns, start=1):
+        obj = {
+            "turn_number": i,
+            "role": turn["role"],
+            "content": turn["content"],
+            "timestamp": now,
+            "session_id": session_id,
+        }
+        path = f"{session_dir}/turn-{i:03d}.json"
+        with open(path, "w") as f:
+            json.dump(obj, f, indent=2)
+        paths.append(path)
+
+    volume.commit()
+    return paths
+
+
+@app.function(
+    image=image,
+    volumes={MOUNT_PATH: volume},
     timeout=60,
 )
 def list_transcripts(repo: str) -> dict:
-    """Smoke-test helper: list sessions and turns from the mounted bucket."""
-    import json
+    """List sessions and turns from the volume."""
     import os
 
     transcript_dir = f"{MOUNT_PATH}/{repo}"

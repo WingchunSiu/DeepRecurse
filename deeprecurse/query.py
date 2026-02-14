@@ -18,11 +18,11 @@ def main() -> None:
     parser.add_argument("--repo", required=True, help="Repository name.")
     args = parser.parse_args()
 
-    # Import here so modal isn't required just to see --help
-    from deeprecurse.modal_app import run_query
+    from deeprecurse.modal_app import app, run_query
 
     print(f"Querying repo '{args.repo}'...", file=sys.stderr)
-    answer = run_query.remote(query=args.query, repo=args.repo)
+    with app.run():
+        answer = run_query.remote(query=args.query, repo=args.repo)
     print(answer)
 
 

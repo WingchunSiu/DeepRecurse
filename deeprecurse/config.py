@@ -1,8 +1,8 @@
 """Configuration constants for DeepRecurse."""
 
-# S3 / CloudBucketMount
-BUCKET_NAME = "deeprecurse-transcripts"  # single bucket, repos as subdirectories
-MOUNT_PATH = "/transcripts"  # where the bucket is mounted inside Modal
+# Modal Volume
+VOLUME_NAME = "deeprecurse-transcripts"
+MOUNT_PATH = "/transcripts"
 
 # Models
 ROOT_MODEL = "gpt-5"
@@ -13,5 +13,5 @@ MAX_ITERATIONS = 10
 
 # Modal
 MODAL_APP_NAME = "deeprecurse"
-MODAL_SECRET_NAME = "aws-creds"
+MODAL_SECRET_NAME = "openai-secret"  # must contain OPENAI_API_KEY
 MODAL_IMAGE_PYTHON = "3.12"

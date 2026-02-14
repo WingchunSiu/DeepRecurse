@@ -8,10 +8,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Ensure rlm-minimal is importable
-_rlm_path = str(Path(__file__).resolve().parent.parent / "rlm-minimal")
-if _rlm_path not in sys.path:
-    sys.path.insert(0, _rlm_path)
+# Ensure rlm is importable.
+# Locally: package is at DeepRecurse/rlm/rlm/ → add DeepRecurse/rlm/ to sys.path.
+# In Modal: package is at /root/rlm/ and PYTHONPATH=/root handles it.
+_rlm_parent = Path(__file__).resolve().parent.parent / "rlm"
+if (_rlm_parent / "rlm" / "__init__.py").exists():
+    _rlm_path = str(_rlm_parent)
+    if _rlm_path not in sys.path:
+        sys.path.insert(0, _rlm_path)
 
 from rlm.rlm_repl import RLM_REPL
 

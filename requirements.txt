@@ -2,4 +2,3 @@ openai
 python-dotenv
 rich
 modal
-boto3

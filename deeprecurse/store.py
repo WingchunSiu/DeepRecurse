@@ -1,4 +1,4 @@
-"""Upload transcript files to S3.
+"""Upload transcript files to the Modal Volume.
 
 Usage:
     # Upload a raw transcript file (alternating USER:/ASSISTANT: lines)
@@ -7,33 +7,18 @@ Usage:
     # Pipe from stdin
     cat transcript.txt | python -m deeprecurse.store - --repo myrepo --session abc123
 
-Bucket layout produced:
-    s3://deeprecurse-transcripts/{repo}/{session_id}/turn-001.json
-    s3://deeprecurse-transcripts/{repo}/{session_id}/turn-002.json
+Volume layout produced:
+    /transcripts/{repo}/{session_id}/turn-001.json
+    /transcripts/{repo}/{session_id}/turn-002.json
     ...
-
-Each turn JSON:
-    {
-        "turn_number": 1,
-        "role": "user",
-        "content": "...",
-        "timestamp": "2026-02-14T...",
-        "session_id": "abc123"
-    }
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import uuid
-from datetime import datetime, timezone
-
-import boto3
-
-from deeprecurse.config import BUCKET_NAME
 
 
 def parse_transcript(text: str) -> list[dict]:
@@ -50,7 +35,6 @@ def parse_transcript(text: str) -> list[dict]:
     for line in text.splitlines():
         match = re.match(r"^(USER|ASSISTANT):\s*(.*)", line)
         if match:
-            # Flush previous turn
             if current_role is not None:
                 turns.append({
                     "role": current_role,
@@ -61,7 +45,6 @@ def parse_transcript(text: str) -> list[dict]:
         else:
             current_lines.append(line)
 
-    # Flush last turn
     if current_role is not None:
         turns.append({
             "role": current_role,
@@ -71,40 +54,9 @@ def parse_transcript(text: str) -> list[dict]:
     return turns
 
 
-def upload_turns(
-    turns: list[dict],
-    repo: str,
-    session_id: str,
-    bucket: str = BUCKET_NAME,
-) -> list[str]:
-    """Upload parsed turns to S3 and return the list of S3 keys written."""
-    s3 = boto3.client("s3")
-    now = datetime.now(timezone.utc).isoformat()
-    keys: list[str] = []
-
-    for i, turn in enumerate(turns, start=1):
-        obj = {
-            "turn_number": i,
-            "role": turn["role"],
-            "content": turn["content"],
-            "timestamp": now,
-            "session_id": session_id,
-        }
-        key = f"{repo}/{session_id}/turn-{i:03d}.json"
-        s3.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=json.dumps(obj, indent=2),
-            ContentType="application/json",
-        )
-        keys.append(key)
-
-    return keys
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Upload a transcript file to S3 as structured turn JSON."
+        description="Upload a transcript file to the Modal Volume as structured turn JSON."
     )
     parser.add_argument(
         "file",
@@ -116,14 +68,8 @@ def main() -> None:
         default=None,
         help="Session ID (auto-generated if omitted).",
     )
-    parser.add_argument(
-        "--bucket",
-        default=BUCKET_NAME,
-        help=f"S3 bucket name (default: {BUCKET_NAME}).",
-    )
     args = parser.parse_args()
 
-    # Read input
     if args.file == "-":
         text = sys.stdin.read()
     else:
@@ -137,10 +83,13 @@ def main() -> None:
         print("No turns found in input.", file=sys.stderr)
         sys.exit(1)
 
-    keys = upload_turns(turns, repo=args.repo, session_id=session_id, bucket=args.bucket)
-    print(f"Uploaded {len(keys)} turns to s3://{args.bucket}/")
-    for k in keys:
-        print(f"  {k}")
+    from deeprecurse.modal_app import app, store_transcript
+
+    with app.run():
+        paths = store_transcript.remote(turns=turns, repo=args.repo, session_id=session_id)
+    print(f"Stored {len(paths)} turns:")
+    for p in paths:
+        print(f"  {p}")
 
 
 if __name__ == "__main__":
