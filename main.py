@@ -1,11 +1,8 @@
-"""Local multi-turn chat interface backed by rlm-minimal."""
+"""Local multi-turn chat CLI that queries the MCP server tool."""
 
 from __future__ import annotations
 
 import argparse
-import importlib
-import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,78 +17,37 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
-def ensure_rlm_importable() -> None:
-    rlm_path = str(project_root() / "rlm-minimal")
-    if rlm_path not in sys.path:
-        sys.path.insert(0, rlm_path)
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prototype local chat-RLM CLI")
+    parser = argparse.ArgumentParser(description="Prototype chat CLI using MCP-hosted RLM")
     parser.add_argument("--chat-file", default=DEFAULT_CHAT_FILE, help="Shared chat log path")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Root model name")
-    parser.add_argument("--recursive-model", default=DEFAULT_RECURSIVE_MODEL, help="Recursive model")
-    parser.add_argument("--max-iterations", type=int, default=10, help="Max root iterations")
-    parser.add_argument("--enable-logging", action="store_true", help="Enable RLM logs")
     return parser.parse_args()
 
 
 @dataclass
 class ChatConfig:
     chat_path: Path
-    model: str
-    recursive_model: str
-    max_iterations: int
-    enable_logging: bool
+    server_module: str = "claude_skill_mcp.server"
 
 
-class ChatStore:
-    def __init__(self, chat_path: Path):
-        self.chat_path = chat_path
-        self._ensure_file()
+class MCPChatClient:
+    """Thin local client that invokes the MCP server's chat tool function."""
 
-    def _ensure_file(self) -> None:
-        self.chat_path.parent.mkdir(parents=True, exist_ok=True)
-        self.chat_path.touch(exist_ok=True)
+    def __init__(self, server_module: str, chat_path: Path):
+        # Import is local to keep CLI startup lightweight.
+        from importlib import import_module
 
-    def read_context(self) -> str:
-        context = self.chat_path.read_text(encoding="utf-8")
-        return context if context.strip() else "No prior chat history yet."
+        server = import_module(server_module)
+        self._chat_tool = server.chat_rlm_query
+        self._chat_path = chat_path
 
-    def append_turn(self, user_query: str, assistant_answer: str) -> None:
-        with self.chat_path.open("a", encoding="utf-8") as file:
-            file.write(f"\nUSER: {user_query}\nASSISTANT: {assistant_answer}\n")
-
-
-class RLMEngine:
-    def __init__(
-        self,
-        *,
-        model: str,
-        recursive_model: str,
-        max_iterations: int,
-        enable_logging: bool,
-    ):
-        ensure_rlm_importable()
-        rlm_repl_module = importlib.import_module("rlm.rlm_repl")
-        RLM_REPL = rlm_repl_module.RLM_REPL
-
-        self.rlm = RLM_REPL(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model=model,
-            recursive_model=recursive_model,
-            max_iterations=max_iterations,
-            enable_logging=enable_logging,
-        )
-
-    def answer(self, context: str, query: str) -> str:
-        return self.rlm.completion(context=context, query=query)
+    def answer(self, query: str) -> str:
+        # chat_rlm_query handles read context + generate + append in server.py
+        return self._chat_tool(query=query, chat_file=str(self._chat_path))
 
 
 class ChatSession:
-    def __init__(self, store: ChatStore, engine: RLMEngine):
-        self.store = store
-        self.engine = engine
+    def __init__(self, client: MCPChatClient):
+        self.client = client
 
     def run(self) -> None:
         print("Chat-RLM ready. Type your question, or 'exit' to quit.")
@@ -103,13 +59,9 @@ class ChatSession:
                 print("Goodbye!")
                 break
 
-            context = self.store.read_context()
-            print(f"Context:\n{context}\n---")
-            print(f"Query: {query}")
-            print("Generating answer...")
-            answer = self.engine.answer(context=context, query=query)
+            print("Generating answer via MCP server tool...")
+            answer = self.client.answer(query=query)
             print(f"Assistant: {answer}")
-            self.store.append_turn(query, answer)
 
 
 def build_config(args: argparse.Namespace) -> ChatConfig:
@@ -119,10 +71,6 @@ def build_config(args: argparse.Namespace) -> ChatConfig:
 
     return ChatConfig(
         chat_path=chat_path,
-        model=args.model,
-        recursive_model=args.recursive_model,
-        max_iterations=args.max_iterations,
-        enable_logging=args.enable_logging,
     )
 
 
@@ -130,14 +78,7 @@ def main() -> None:
     args = parse_args()
     config = build_config(args)
 
-    store = ChatStore(config.chat_path)
-    engine = RLMEngine(
-        model=config.model,
-        recursive_model=config.recursive_model,
-        max_iterations=config.max_iterations,
-        enable_logging=config.enable_logging,
-    )
-    session = ChatSession(store, engine)
+    session = ChatSession(MCPChatClient(config.server_module, config.chat_path))
     session.run()
 
 
