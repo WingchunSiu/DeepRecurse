@@ -1,0 +1,4 @@
+openai
+dotenv
+rich
+boto3
