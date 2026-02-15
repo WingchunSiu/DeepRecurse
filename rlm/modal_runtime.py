@@ -58,7 +58,6 @@ def run_rlm_remote(
         max_iterations=max_iterations,
         enable_logging=True,
         sub_rlm_mode="modal_sandbox",
-        sandbox_image=image,
         sandbox_volumes={MOUNT_PATH: shared_volume},
         sandbox_workdir=SOURCE_PATH_IN_IMAGE,
         env_file_path=env_path,

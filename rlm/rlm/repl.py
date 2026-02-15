@@ -73,8 +73,6 @@ class ModalSandboxSubRLM(RLM):
         self.env_file_path = env_file_path
         self.timeout = timeout
 
-        if self.sandbox_image is None:
-            raise ValueError("sandbox_image is required for ModalSandboxSubRLM")
         if not self.sandbox_volumes:
             raise ValueError("sandbox_volumes is required for ModalSandboxSubRLM")
 
@@ -86,13 +84,16 @@ class ModalSandboxSubRLM(RLM):
 
         sandbox = None
         try:
-            sandbox = modal.Sandbox.create(
-                app=self.sandbox_app,
-                image=self.sandbox_image,
-                volumes=self.sandbox_volumes,
-                workdir=self.sandbox_workdir,
-                timeout=self.timeout + 30,
-            )
+            create_kwargs = {
+                "app": self.sandbox_app,
+                "volumes": self.sandbox_volumes,
+                "workdir": self.sandbox_workdir,
+                "timeout": self.timeout + 30,
+            }
+            if self.sandbox_image is not None:
+                create_kwargs["image"] = self.sandbox_image
+
+            sandbox = modal.Sandbox.create(**create_kwargs)
             process = sandbox.exec(
                 "python",
                 "-m",

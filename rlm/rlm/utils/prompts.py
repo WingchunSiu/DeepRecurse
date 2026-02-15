@@ -16,6 +16,7 @@ The REPL environment is initialized with:
 
 You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of large context files. Use these variables as buffers to build up your final answer.
 Make sure to explicitly inspect enough of the context file in REPL before answering your query. A useful strategy is to inspect the file format, create a chunking strategy, process chunks, and aggregate chunk-level findings with `llm_query`.
+Prefer deterministic Python operations over `llm_query` whenever possible (for example: direct string search, regex, and parsing). Only call `llm_query` when semantic reasoning is required.
 
 When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier. For example:
 ```repl

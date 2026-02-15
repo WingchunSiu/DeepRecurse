@@ -42,7 +42,7 @@ def find_final_answer(text: str) -> Optional[Tuple[str, str]]:
 def add_execution_result_to_messages(messages: List[Dict[str, str]], 
                                    code: str, 
                                    result: str,
-                                   max_character_length: int = 100000,
+                                   max_character_length: int = 12000,
                                    ) -> List[Dict[str, str]]:
     """
     Add code execution result to the conversation messages.
@@ -57,7 +57,7 @@ def add_execution_result_to_messages(messages: List[Dict[str, str]],
     Returns:
         Updated messages list
     """
-    # Truncate result if it exceeds 100k characters
+    # Truncate result to keep root model context bounded.
     if len(result) > max_character_length:
         result = result[:max_character_length] + "..."
     
@@ -73,7 +73,8 @@ def format_execution_result(
     stdout: str,
     stderr: str,
     locals_dict: Dict[str, Any],
-    truncate_length: int = 100
+    truncate_length: int = 100,
+    max_output_chars: int = 4000,
 ) -> str:
     """
     Format the execution result as a string for display.
@@ -87,9 +88,13 @@ def format_execution_result(
     result_parts = []
     
     if stdout:
+        if len(stdout) > max_output_chars:
+            stdout = stdout[:max_output_chars] + f"\n...[TRUNCATED {len(stdout) - max_output_chars} chars]"
         result_parts.append(f"\n{stdout}")
     
     if stderr:
+        if len(stderr) > max_output_chars:
+            stderr = stderr[:max_output_chars] + f"\n...[TRUNCATED {len(stderr) - max_output_chars} chars]"
         result_parts.append(f"\n{stderr}")
     
     # Show some key variables (excluding internal ones)
