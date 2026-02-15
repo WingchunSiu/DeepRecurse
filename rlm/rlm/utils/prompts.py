@@ -6,6 +6,9 @@ from typing import Dict
 
 DEFAULT_QUERY = "Please read through the context and answer any queries or respond to any instructions contained within it."
 
+## temp lines removed from prompt:
+# Prefer deterministic Python operations over `llm_query` whenever possible (for example: direct string search, regex, and parsing). Only call `llm_query` when semantic reasoning is required.
+
 # System prompt for the REPL environment with explicit final answer checking
 REPL_SYSTEM_PROMPT = """You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
 
@@ -14,9 +17,9 @@ The REPL environment is initialized with:
 2. A `llm_query` function that allows you to query an LLM (that can handle around 500K chars) inside your REPL environment.
 3. The ability to use `print()` statements to view output and continue your reasoning.
 
-You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of large context files. Use these variables as buffers to build up your final answer.
+You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. This is a powerful feature so make sure you use it to delegate work. Use these variables as buffers to build up your final answer.
 Make sure to explicitly inspect enough of the context file in REPL before answering your query. A useful strategy is to inspect the file format, create a chunking strategy, process chunks, and aggregate chunk-level findings with `llm_query`.
-Prefer deterministic Python operations over `llm_query` whenever possible (for example: direct string search, regex, and parsing). Only call `llm_query` when semantic reasoning is required.
+Each REPL block must be self-contained: define every variable before use and avoid f-strings with literal `{}` (use string concatenation) so `llm_query` executes without NameError or format errors.
 
 When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier. For example:
 ```repl

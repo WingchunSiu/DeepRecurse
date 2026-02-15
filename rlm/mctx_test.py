@@ -425,8 +425,8 @@ def main() -> None:
             result = run_rlm_remote.remote(
                 query=query,
                 context_relpath=context_relpath,
-                model="gpt-5-mini",
-                recursive_model="gpt-5-nano",
+                model="gpt-5",
+                recursive_model="gpt-5-mini",
                 max_iterations=10,
             )
 

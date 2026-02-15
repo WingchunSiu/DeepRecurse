@@ -29,6 +29,7 @@ class RLM_REPL(RLM):
                  sub_rlm_mode: str = "local",
                  sandbox_app: Any = None,
                  sandbox_image: Any = None,
+                 sandbox_image_id: Optional[str] = None,
                  sandbox_volumes: Optional[dict[str, Any]] = None,
                  sandbox_workdir: Optional[str] = None,
                  env_file_path: Optional[str] = None,
@@ -46,6 +47,7 @@ class RLM_REPL(RLM):
         self.sub_rlm_mode = sub_rlm_mode
         self.sandbox_app = sandbox_app
         self.sandbox_image = sandbox_image
+        self.sandbox_image_id = sandbox_image_id
         self.sandbox_volumes = sandbox_volumes
         self.sandbox_workdir = sandbox_workdir
         self.env_file_path = env_file_path
@@ -95,6 +97,7 @@ class RLM_REPL(RLM):
             sub_rlm_mode=self.sub_rlm_mode,
             sandbox_app=self.sandbox_app,
             sandbox_image=self.sandbox_image,
+            sandbox_image_id=self.sandbox_image_id,
             sandbox_volumes=self.sandbox_volumes,
             sandbox_workdir=self.sandbox_workdir,
             env_file_path=self.env_file_path,

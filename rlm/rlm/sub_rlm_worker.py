@@ -8,11 +8,14 @@ Protocol:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from dotenv import load_dotenv
 
-from rlm.utils.llm import OpenAIClient
+def _debug(message: str) -> None:
+    sys.stderr.write(f"[sub_rlm_worker] {message}\n")
+    sys.stderr.flush()
 
 
 def _read_payload() -> dict:
@@ -24,6 +27,13 @@ def _read_payload() -> dict:
 
 def main() -> int:
     try:
+        _debug(f"cwd={os.getcwd()}")
+        _debug(f"python_executable={sys.executable}")
+        _debug(f"pythonpath={os.environ.get('PYTHONPATH')}")
+        _debug(f"sys.path={sys.path}")
+        _debug(f"has_/root/rlm-app={os.path.exists('/root/rlm-app')}")
+        _debug(f"has_/root/rlm-app/rlm={os.path.exists('/root/rlm-app/rlm')}")
+
         payload = _read_payload()
         env_file_path = payload.get("env_file_path")
         if env_file_path:
@@ -31,6 +41,8 @@ def main() -> int:
 
         prompt = payload.get("prompt")
         model = payload.get("model", "gpt-5")
+
+        from rlm.utils.llm import OpenAIClient
 
         client = OpenAIClient(model=model)
         response = client.completion(messages=prompt, timeout=300)

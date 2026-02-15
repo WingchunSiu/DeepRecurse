@@ -8,6 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
+from modal.stream_type import StreamType
 
 from rlm import RLM
 
@@ -60,6 +61,7 @@ class ModalSandboxSubRLM(RLM):
         model: str = "gpt-5",
         sandbox_app: Any = None,
         sandbox_image: Any = None,
+        sandbox_image_id: Optional[str] = None,
         sandbox_volumes: Optional[dict[str, Any]] = None,
         sandbox_workdir: Optional[str] = None,
         env_file_path: Optional[str] = None,
@@ -68,6 +70,7 @@ class ModalSandboxSubRLM(RLM):
         self.model = model
         self.sandbox_app = sandbox_app
         self.sandbox_image = sandbox_image
+        self.sandbox_image_id = sandbox_image_id
         self.sandbox_volumes = sandbox_volumes or {}
         self.sandbox_workdir = sandbox_workdir
         self.env_file_path = env_file_path
@@ -83,22 +86,72 @@ class ModalSandboxSubRLM(RLM):
             return f"Error making LLM query in sandbox: failed to import modal ({exc})"
 
         sandbox = None
+        process = None
+        previous_cwd = os.getcwd()
+        switched_cwd = False
+        sandbox_debug = ""
         try:
+            # Sandbox image definitions can include local dirs; avoid resolving those
+            # relative to the REPL temp directory.
+            if self.sandbox_workdir and os.path.isdir(self.sandbox_workdir):
+                os.chdir(self.sandbox_workdir)
+                switched_cwd = True
+
             create_kwargs = {
                 "app": self.sandbox_app,
                 "volumes": self.sandbox_volumes,
                 "workdir": self.sandbox_workdir,
                 "timeout": self.timeout + 30,
+                "env": {"PYTHONPATH": self.sandbox_workdir or "/root/rlm-app"},
             }
-            if self.sandbox_image is not None:
+            if self.sandbox_image_id:
+                create_kwargs["image"] = modal.Image.from_id(self.sandbox_image_id)
+            elif self.sandbox_image is not None:
                 create_kwargs["image"] = self.sandbox_image
 
             sandbox = modal.Sandbox.create(**create_kwargs)
+            # Preflight for debugging import-path issues inside the sandbox.
+            try:
+                preflight = sandbox.exec(
+                    "python",
+                    "-c",
+                    (
+                        "import json, os, sys; "
+                        "print(json.dumps({"
+                        "'cwd': os.getcwd(), "
+                        "'pythonpath': os.environ.get('PYTHONPATH'), "
+                        "'sys_path': sys.path, "
+                        "'has_root_app': os.path.exists('/root/rlm-app'), "
+                        "'has_rlm_pkg_dir': os.path.exists('/root/rlm-app/rlm'), "
+                        "'root_entries': (sorted(os.listdir('/root/rlm-app'))[:50] if os.path.exists('/root/rlm-app') else None), "
+                        "'rlm_entries': (sorted(os.listdir('/root/rlm-app/rlm'))[:50] if os.path.exists('/root/rlm-app/rlm') else None)"
+                        "}))"
+                    ),
+                    timeout=20,
+                    stdout=StreamType.PIPE,
+                    stderr=StreamType.PIPE,
+                )
+                preflight_stdout = preflight.stdout.read()
+                preflight_stderr = preflight.stderr.read()
+                preflight.wait()
+                if isinstance(preflight_stdout, bytes):
+                    preflight_stdout = preflight_stdout.decode("utf-8", errors="replace")
+                if isinstance(preflight_stderr, bytes):
+                    preflight_stderr = preflight_stderr.decode("utf-8", errors="replace")
+                if preflight.returncode == 0 and preflight_stdout:
+                    sandbox_debug = preflight_stdout.strip()
+                elif preflight_stderr:
+                    sandbox_debug = "preflight stderr: " + preflight_stderr.strip()
+            except Exception as preflight_exc:
+                sandbox_debug = f"preflight failed: {preflight_exc}"
+
             process = sandbox.exec(
                 "python",
                 "-m",
                 "rlm.sub_rlm_worker",
                 timeout=self.timeout,
+                stdout=StreamType.PIPE,
+                stderr=StreamType.PIPE,
             )
 
             payload = {
@@ -106,9 +159,31 @@ class ModalSandboxSubRLM(RLM):
                 "model": self.model,
                 "env_file_path": self.env_file_path,
             }
-            process.stdin.write(json.dumps(payload).encode("utf-8"))
-            process.stdin.write_eof()
-            process.stdin.drain()
+            try:
+                process.stdin.write(json.dumps(payload).encode("utf-8"))
+                process.stdin.write_eof()
+                process.stdin.drain()
+            except Exception as write_exc:
+                stderr = ""
+                try:
+                    process.wait()
+                except Exception:
+                    pass
+                try:
+                    stderr = process.stderr.read()
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", errors="replace")
+                except Exception:
+                    stderr = ""
+
+                details = str(write_exc)
+                if process.returncode is not None:
+                    details += f" (returncode={process.returncode})"
+                if stderr and stderr.strip():
+                    details += "; stderr: " + stderr.strip()
+                if sandbox_debug:
+                    details += "; sandbox_debug: " + sandbox_debug
+                return f"Error making LLM query in sandbox: {details}"
 
             stdout = process.stdout.read()
             stderr = process.stderr.read()
@@ -121,15 +196,38 @@ class ModalSandboxSubRLM(RLM):
 
             if process.returncode != 0:
                 error_msg = stderr.strip() if stderr and stderr.strip() else "sandbox subprocess failed"
+                if sandbox_debug:
+                    error_msg += " | sandbox_debug: " + sandbox_debug
                 return f"Error making LLM query in sandbox: {error_msg}"
 
             return stdout or ""
         except Exception as exc:
-            return f"Error making LLM query in sandbox: {exc}"
+            details = str(exc)
+            if process is not None:
+                try:
+                    process.wait()
+                except Exception:
+                    pass
+                try:
+                    stderr = process.stderr.read()
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", errors="replace")
+                    if stderr and stderr.strip():
+                        details += "; stderr: " + stderr.strip()
+                except Exception:
+                    pass
+            if sandbox_debug:
+                details += "; sandbox_debug: " + sandbox_debug
+            return f"Error making LLM query in sandbox: {details}"
         finally:
             if sandbox is not None:
                 try:
                     sandbox.terminate()
+                except Exception:
+                    pass
+            if switched_cwd:
+                try:
+                    os.chdir(previous_cwd)
                 except Exception:
                     pass
 
@@ -169,6 +267,7 @@ class REPLEnv:
         sandbox_image: Any = None,
         sandbox_volumes: Optional[dict[str, Any]] = None,
         sandbox_workdir: Optional[str] = None,
+        sandbox_image_id: Optional[str] = None,
         env_file_path: Optional[str] = None,
         sub_rlm_timeout: int = 300,
     ):
@@ -185,6 +284,7 @@ class REPLEnv:
                 model=recursive_model,
                 sandbox_app=sandbox_app,
                 sandbox_image=sandbox_image,
+                sandbox_image_id=sandbox_image_id,
                 sandbox_volumes=sandbox_volumes,
                 sandbox_workdir=sandbox_workdir,
                 env_file_path=env_file_path,
