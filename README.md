@@ -1,10 +1,12 @@
-# DeepRecurse
+# Monolith
+
+***One context, run everywhere.***
 
 **RLM-as-a-service: persistent, recursive reasoning for AI coding agents.**
 
 Built on top of [alexzhang13/rlm](https://github.com/alexzhang13/rlm) — the open-source [Recursive Language Model](https://arxiv.org/abs/2512.24601v1) framework where LLMs offload context into a REPL environment and recursively call sub-LLMs to decompose complex tasks. On benchmarks like OOLONG (132k tokens), RLM(GPT-5-mini) outperforms GPT-5 by over 34 points at similar cost.
 
-DeepRecurse takes the core RLM and turns it into **deployed infrastructure** that AI agents can call as a tool. We wrap the RLM in an [MCP](https://modelcontextprotocol.io) server, deploy the compute on [Modal](https://modal.com) serverless, and add a persistent memory layer (Modal Volume) so the RLM accumulates context across sessions. The result: plug it into Claude Code and the agent gains the ability to recursively reason over arbitrarily large contexts — and remember what it learned.
+Monolith takes the core RLM and turns it into **deployed infrastructure** that AI agents can call as a tool. We wrap the RLM in an [MCP](https://modelcontextprotocol.io) server, deploy the compute on [Modal](https://modal.com) serverless, and add a persistent memory layer (Modal Volume) so the RLM accumulates context across sessions. The result: plug it into Claude Code and the agent gains the ability to recursively reason over arbitrarily large contexts — and remember what it learned.
 
 ## What We Added on Top of RLM
 
@@ -15,7 +17,7 @@ DeepRecurse takes the core RLM and turns it into **deployed infrastructure** tha
 | **Persistent memory** | Modal Volume stores `{thread_id}/context.txt` | RLM builds on past sessions instead of starting from scratch |
 | **Session auto-upload** | Claude Code `Stop` hook captures full transcripts | Every conversation becomes searchable context for the RLM |
 | **Modal Sandbox sub-LLMs** | `ModalSandboxSubRLM` runs sub-LLM calls in isolated sandboxes | Safe code execution for recursive calls in the cloud |
-| **CLI tools** | `python -m deeprecurse.query` / `store` | Use RLM outside of Claude Code |
+| **CLI tools** | `python -m monolith.query` / `store` | Use RLM outside of Claude Code |
 
 ## Architecture
 
@@ -72,8 +74,8 @@ The root LLM uses a powerful model (gpt-5) for orchestration while sub-LLMs use 
 ### 1. Set up Modal
 
 ```bash
-git clone https://github.com/MichaelXiaoKun/DeepRecurse.git
-cd DeepRecurse
+git clone https://github.com/WingchunSiu/Monolith.git
+cd Monolith
 modal token set
 ```
 
@@ -99,7 +101,7 @@ modal deploy modal_runtime.py
 **Local mode (stdio — recommended for dev):**
 
 ```bash
-claude mcp add deeprecurse --transport stdio -- python /path/to/DeepRecurse/mcp-modal/server.py
+claude mcp add monolith --transport stdio -- python /path/to/Monolith/mcp-modal/server.py
 ```
 
 **Cloud mode (Cloudflare Worker → Modal HTTP):**
@@ -109,8 +111,8 @@ cd mcp-modal/cloudflare/worker-gateway
 # set MODAL_BACKEND_URL in wrangler.toml
 npm install && npm run deploy
 
-claude mcp add deeprecurse --transport http \
-  --url https://deeprecurse-mcp-modal.<subdomain>.workers.dev/mcp
+claude mcp add monolith --transport http \
+  --url https://monolith-mcp-modal.<subdomain>.workers.dev/mcp
 ```
 
 ### 5. Use it
@@ -147,7 +149,7 @@ Add to `.claude/settings.local.json` to automatically capture every Claude Code 
   "hooks": {
     "Stop": [{
       "type": "command",
-      "command": "/path/to/DeepRecurse/scripts/session_end_upload.sh"
+      "command": "/path/to/Monolith/scripts/session_end_upload.sh"
     }]
   }
 }
@@ -158,7 +160,7 @@ Each transcript is uploaded with metadata (developer, git branch, timestamps, me
 ## Project Structure
 
 ```
-DeepRecurse/
+Monolith/
 ├── mcp-modal/                  # MCP + Modal deployment layer
 │   ├── server.py               # MCP server (stdio)
 │   ├── modal_runtime.py        # Modal functions + HTTP endpoints
@@ -173,9 +175,9 @@ DeepRecurse/
 │   │       ├── llm.py          # OpenAI client wrapper
 │   │       └── prompts.py      # System prompts + 3-phase strategy
 │   └── main.py                 # Needle-in-haystack example
-├── deeprecurse/                # CLI entry points
-│   ├── query.py                # python -m deeprecurse.query
-│   └── store.py                # python -m deeprecurse.store
+├── monolith/                   # CLI entry points
+│   ├── query.py                # python -m monolith.query
+│   └── store.py                # python -m monolith.store
 └── scripts/
     └── session_end_upload.sh   # Stop hook for auto-upload
 ```
