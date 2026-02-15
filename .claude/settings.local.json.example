@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<YOUR_REPO_PATH>/scripts/session_end_upload.sh",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}
