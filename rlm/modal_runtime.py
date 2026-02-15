@@ -33,6 +33,52 @@ image = (
 shared_volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
 
 
+def _candidate_python_roots() -> list[str]:
+    roots = [
+        SOURCE_PATH_IN_IMAGE,
+        os.path.join(SOURCE_PATH_IN_IMAGE, "rlm"),
+        str(LOCAL_SOURCE_DIR),
+    ]
+    seen = set()
+    ordered = []
+    for root in roots:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        if os.path.isfile(os.path.join(root, "rlm", "rlm_repl.py")):
+            ordered.append(root)
+    return ordered
+
+
+def _import_rlm_repl():
+    roots = _candidate_python_roots()
+    for root in reversed(roots):
+        if root not in sys.path:
+            sys.path.insert(0, root)
+
+    try:
+        from rlm.rlm_repl import RLM_REPL
+        return RLM_REPL
+    except Exception as first_exc:  # pragma: no cover - surfaced in Modal logs
+        # If rlm was imported as a namespace package (e.g. via rlm.modal_runtime),
+        # it can mask the real inner `rlm` package that contains rlm_repl.py.
+        rlm_module = sys.modules.get("rlm")
+        if rlm_module is not None and getattr(rlm_module, "__file__", None) is None:
+            sys.modules.pop("rlm", None)
+            try:
+                from rlm.rlm_repl import RLM_REPL
+                return RLM_REPL
+            except Exception:
+                pass
+
+        candidate_files = [os.path.join(root, "rlm", "rlm_repl.py") for root in roots]
+        raise ImportError(
+            "Failed to import rlm.rlm_repl. "
+            f"roots={roots}, candidate_files={candidate_files}, "
+            f"sys.path_head={sys.path[:8]}, original_error={first_exc}"
+        ) from first_exc
+
+
 @app.function(
     image=image,
     volumes={MOUNT_PATH: shared_volume},
@@ -41,15 +87,13 @@ shared_volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True
 def run_rlm_remote(
     query: str,
     context_relpath: str,
-    model: str = "gpt-5",
+    model: str = "gpt-5-mini",
     recursive_model: str = "gpt-5-nano",
     max_iterations: int = 10,
 ) -> str:
     """Run RLM_REPL on Modal with context read from a mounted volume file."""
 
-    sys.path.insert(0, SOURCE_PATH_IN_IMAGE)
-
-    from rlm.rlm_repl import RLM_REPL
+    RLM_REPL = _import_rlm_repl()
 
     env_path = os.path.join(MOUNT_PATH, ENV_RELATIVE_PATH)
     if os.path.exists(env_path):

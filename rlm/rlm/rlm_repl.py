@@ -21,8 +21,8 @@ class RLM_REPL(RLM):
     
     def __init__(self, 
                  api_key: Optional[str] = None, 
-                 model: str = "gpt-5",
-                 recursive_model: str = "gpt-5",
+                 model: str = "gpt-5-mini",
+                 recursive_model: str = "gpt-5-mini",
                  max_iterations: int = 20,
                  depth: int = 0,
                  enable_logging: bool = False,

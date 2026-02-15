@@ -44,7 +44,7 @@ def main() -> int:
             load_dotenv(env_file_path, override=True)
 
         prompt = payload.get("prompt")
-        model = payload.get("model", "gpt-5")
+        model = payload.get("model", "gpt-5-mini")
         _debug(f"model={model}")
         _debug(f"prompt_type={type(prompt).__name__}")
         if isinstance(prompt, str):

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_MODEL = "gpt-5"
+DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_RECURSIVE_MODEL = "gpt-5-nano"
 DEFAULT_CHAT_FILE = "chat.txt"
 EXIT_COMMANDS = {"exit", "quit", ":q"}

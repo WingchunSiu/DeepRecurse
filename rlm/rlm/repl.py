@@ -16,7 +16,7 @@ from rlm import RLM
 class Sub_RLM(RLM):
     """Recursive LLM client for REPL environment with fixed configuration."""
     
-    def __init__(self, model: str = "gpt-5"):
+    def __init__(self, model: str = "gpt-5-mini"):
         # Configuration - model can be specified
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -58,7 +58,7 @@ class ModalSandboxSubRLM(RLM):
 
     def __init__(
         self,
-        model: str = "gpt-5",
+        model: str = "gpt-5-mini",
         sandbox_app: Any = None,
         sandbox_image: Any = None,
         sandbox_image_id: Optional[str] = None,
@@ -87,6 +87,17 @@ class ModalSandboxSubRLM(RLM):
             return "<empty>"
         return text
 
+    def _sandbox_pythonpath(self) -> str:
+        roots = []
+        for candidate in (
+            self.sandbox_workdir,
+            "/root/rlm-app",
+            "/root/rlm-app/rlm",
+        ):
+            if candidate and candidate not in roots:
+                roots.append(candidate)
+        return os.pathsep.join(roots)
+
     def completion(self, prompt) -> str:
         try:
             import modal
@@ -110,7 +121,7 @@ class ModalSandboxSubRLM(RLM):
                 "volumes": self.sandbox_volumes,
                 "workdir": self.sandbox_workdir,
                 "timeout": self.timeout + 30,
-                "env": {"PYTHONPATH": self.sandbox_workdir or "/root/rlm-app"},
+                "env": {"PYTHONPATH": self._sandbox_pythonpath()},
             }
             if self.sandbox_image_id:
                 create_kwargs["image"] = modal.Image.from_id(self.sandbox_image_id)

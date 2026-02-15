@@ -8,6 +8,7 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,13 +16,15 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-try:
-    from modal_runtime import MOUNT_PATH, app, run_rlm_remote, shared_volume
-except ImportError:
-    from rlm.modal_runtime import MOUNT_PATH, app, run_rlm_remote, shared_volume
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RLM_DIR = PROJECT_ROOT / "rlm"
+if str(RLM_DIR) not in sys.path:
+    sys.path.insert(0, str(RLM_DIR))
+
+from modal_runtime import MOUNT_PATH, app, run_rlm_remote, shared_volume
 
 
-DEFAULT_MODEL = "gpt-5"
+DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_RECURSIVE_MODEL = "gpt-5-nano"
 DEFAULT_CHAT_FILE = "chat.txt"
 DEFAULT_MAX_ITERATIONS = 10
