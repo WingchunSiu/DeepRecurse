@@ -122,3 +122,17 @@ def run_rlm_remote(
         sub_rlm_timeout=600,
     )
     return rlm.completion(query=query, context_path=context_path)
+
+
+@app.function(
+    image=image,
+    volumes={MOUNT_PATH: shared_volume},
+    timeout=300,
+)
+def append_context_remote(context_relpath: str, content: str) -> None:
+    """Append text to a shared context file in the mounted Modal volume."""
+    normalized_relpath = context_relpath.lstrip("/")
+    context_path = os.path.join(MOUNT_PATH, normalized_relpath)
+    os.makedirs(os.path.dirname(context_path), exist_ok=True)
+    with open(context_path, "a", encoding="utf-8") as file:
+        file.write(content)
