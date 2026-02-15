@@ -8,10 +8,16 @@ Supports:
 
 from __future__ import annotations
 
+import getpass
 import importlib
+import json
 import os
+import platform
+import socket
+import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -218,6 +224,205 @@ def chat_rlm_query(
 
     store.append_turn(clean_query, answer)
     return answer
+
+
+# ---------------------------------------------------------------------------
+# Session transcript upload
+# ---------------------------------------------------------------------------
+
+DEFAULT_SESSIONS_DIR = os.getenv(
+    "CLAUDE_SESSIONS_DIR",
+    str(Path.home() / ".claude" / "projects"),
+)
+
+
+def _git_config(key: str) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "config", key], stderr=subprocess.DEVNULL
+        ).decode().strip() or None
+    except Exception:
+        return None
+
+
+def _machine_metadata() -> dict:
+    return {
+        "os_user": getpass.getuser(),
+        "hostname": socket.gethostname(),
+        "platform": platform.system(),
+        "git_user_name": _git_config("user.name"),
+        "git_user_email": _git_config("user.email"),
+    }
+
+
+def _parse_session(jsonl_path: Path) -> dict:
+    """Parse a Claude Code session JSONL into a structured transcript."""
+    messages = []
+    session_id = jsonl_path.stem
+    start_time = end_time = None
+    git_branch = cwd = claude_version = None
+
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if git_branch is None and entry.get("gitBranch"):
+                git_branch = entry["gitBranch"]
+            if cwd is None and entry.get("cwd"):
+                cwd = entry["cwd"]
+            if claude_version is None and entry.get("version"):
+                claude_version = entry["version"]
+
+            entry_type = entry.get("type")
+            if entry_type in ("user", "assistant"):
+                msg = entry.get("message", {})
+                role = msg.get("role", entry_type)
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, str):
+                            text_parts.append(block)
+                        elif isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                    content = "\n".join(text_parts)
+                if content.strip():
+                    timestamp = entry.get("timestamp")
+                    messages.append({"role": role, "content": content.strip(), "timestamp": timestamp})
+                    if timestamp:
+                        if start_time is None:
+                            start_time = timestamp
+                        end_time = timestamp
+
+    machine = _machine_metadata()
+    return {
+        "session_id": session_id,
+        "metadata": {
+            "developer": machine["git_user_name"] or machine["os_user"],
+            "email": machine["git_user_email"],
+            "hostname": machine["hostname"],
+            "platform": machine["platform"],
+            "os_user": machine["os_user"],
+            "git_branch": git_branch,
+            "project_dir": cwd,
+            "claude_version": claude_version,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "message_count": len(messages),
+        "start_time": start_time,
+        "end_time": end_time,
+        "messages": messages,
+    }
+
+
+def _format_transcript(session_data: dict) -> str:
+    """Format session data as readable text with metadata header."""
+    meta = session_data["metadata"]
+    lines = [
+        "=" * 72, "SESSION METADATA", "=" * 72,
+        f"session_id:      {session_data['session_id']}",
+        f"developer:       {meta['developer']}",
+        f"email:           {meta['email']}",
+        f"hostname:        {meta['hostname']}",
+        f"platform:        {meta['platform']}",
+        f"os_user:         {meta['os_user']}",
+        f"git_branch:      {meta['git_branch']}",
+        f"project_dir:     {meta['project_dir']}",
+        f"claude_version:  {meta['claude_version']}",
+        f"message_count:   {session_data['message_count']}",
+        f"start_time:      {session_data['start_time']}",
+        f"end_time:        {session_data['end_time']}",
+        f"uploaded_at:     {meta['uploaded_at']}",
+        "=" * 72, "",
+    ]
+    for msg in session_data["messages"]:
+        role = msg["role"].upper()
+        ts = f" [{msg['timestamp']}]" if msg.get("timestamp") else ""
+        lines.extend([f"[{role}]{ts}", msg["content"], "", "---", ""])
+    return "\n".join(lines)
+
+
+def _find_session_file(session_id: str | None, project_dir: str | None) -> Path | None:
+    """Find session JSONL file. Returns None if not found."""
+    base = Path(DEFAULT_SESSIONS_DIR)
+    if not base.exists():
+        return None
+
+    if project_dir:
+        # Look in specific project dir
+        search_dirs = [base / project_dir]
+    else:
+        # Search all project dirs
+        search_dirs = [d for d in base.iterdir() if d.is_dir()]
+
+    for d in search_dirs:
+        if session_id:
+            matches = list(d.glob(f"*{session_id}*.jsonl"))
+            if matches:
+                return matches[0]
+        else:
+            # Latest session in this dir
+            jsonls = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+            if jsonls:
+                return jsonls[-1]
+    return None
+
+
+@mcp.tool()
+def upload_context(
+    session_id: str | None = None,
+    project_dir: str | None = None,
+    thread_id: str | None = None,
+    tool_token: str | None = None,
+) -> str:
+    """
+    Upload a Claude Code session transcript to the shared chat context store.
+
+    This parses the session JSONL, extracts messages with metadata, and appends
+    the formatted transcript to the chat store so the RLM can reason over it.
+
+    Args:
+        session_id: Specific session ID to upload. If omitted, uploads the latest session.
+        project_dir: Project directory name under ~/.claude/projects/. If omitted, searches all.
+        thread_id: Chat thread to append the transcript to. Defaults to 'transcripts'.
+        tool_token: Optional auth token.
+    """
+    if not _is_authorized(tool_token):
+        return "Error: unauthorized tool call."
+
+    thread_id = (thread_id or "transcripts").strip()
+
+    jsonl_path = _find_session_file(session_id, project_dir)
+    if jsonl_path is None:
+        return f"Error: no session found (session_id={session_id}, project_dir={project_dir})"
+
+    session_data = _parse_session(jsonl_path)
+    if session_data["message_count"] == 0:
+        return f"Session {jsonl_path.stem} is empty, nothing to upload."
+
+    transcript = _format_transcript(session_data)
+
+    # Append to chat store (same backend as chat_rlm_query uses)
+    store = get_chat_store(f"{thread_id}/{session_data['session_id']}.txt")
+    # Write full transcript as a single turn
+    store.append_turn(
+        query=f"[SESSION UPLOAD] {session_data['session_id']}",
+        answer=transcript,
+    )
+
+    meta = session_data["metadata"]
+    return (
+        f"Uploaded session {session_data['session_id']} "
+        f"({session_data['message_count']} messages, "
+        f"developer={meta['developer']}, branch={meta['git_branch']}) "
+        f"to thread '{thread_id}'."
+    )
 
 
 @mcp.custom_route("/rlm", methods=["POST"])

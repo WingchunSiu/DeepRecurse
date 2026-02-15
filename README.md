@@ -1,113 +1,137 @@
-# DeepRecurse
+# DeepRecurse — Cloudflare MCP + Session Upload
 
-Shared-history chat prototype where RLM execution lives in an MCP tool.
+Shared-history chat prototype where RLM execution lives in an MCP tool, deployed via Cloudflare Workers with Durable Objects.
 
-This repo now supports both:
-- local stdio MCP execution
-- cloud deployment with a Python MCP backend + Cloudflare Worker gateway
+This branch adds **`upload_context`** — a second MCP tool that uploads Claude Code session transcripts to the shared context store, so the RLM can reason over past sessions.
 
-## 1) Local development
+## Tools
 
-Install dependencies:
+| Tool | Description |
+|------|-------------|
+| `chat_rlm_query` | Query the RLM with shared persistent thread context. The RLM reads chat history, runs recursive sub-LLM reasoning, and appends the turn. |
+| `upload_context` | Upload a Claude Code session transcript to the context store. Can be called manually or automatically via a SessionEnd hook. |
 
-```bash
-cd /Users/ryanhe/Ryan/TreeHacks/DeepRecurse
-python -m pip install -r requirements.txt
+## How It Works
+
+```
+Developer using Claude Code
+  │
+  ├─ [automatic] SessionEnd hook fires
+  │   └─ Parses session JSONL → formatted transcript
+  │   └─ Calls upload_context MCP tool → stored in ChatStore DO
+  │
+  └─ [manual] Asks a question that needs shared context
+      └─ Claude calls chat_rlm_query MCP tool
+          └─ Cloudflare Worker → RLM Container DO
+              └─ Reads context (including uploaded transcripts)
+              └─ Runs RLM REPL with sub-LLM reasoning
+              └─ Returns answer, appends turn
 ```
 
-Run MCP server (stdio mode):
+## Setup
+
+### 1. Local development (stdio MCP)
 
 ```bash
+pip install -r requirements.txt
 python claude_tool_mcp/server.py
 ```
 
-Add to Claude Code MCP list:
-
+Add to Claude Code:
 ```bash
 claude mcp add deeprecurse --transport stdio -- \
-  python /Users/ryanhe/Ryan/TreeHacks/DeepRecurse/claude_tool_mcp/server.py
+  python /path/to/DeepRecurse/claude_tool_mcp/server.py
 ```
 
-Run local CLI client in another terminal:
+### 2. Cloud deployment (Cloudflare)
 
-```bash
-python main.py
-```
+The Python MCP server runs inside a Cloudflare Container (Durable Object). The Cloudflare Worker gateway handles MCP JSON-RPC at the edge.
 
-Useful flag:
-- `--chat-file` path to shared chat context log (default: `chat.txt`)
-
-## 2) Cloud backend (Python MCP in container)
-
-The server supports:
-- `MCP_TRANSPORT=stdio` (local default)
-- `MCP_TRANSPORT=streamable-http` (remote HTTP endpoint)
-- `CHAT_STORE_BACKEND=file|r2`
-
-### Required environment variables (cloud)
+#### Environment variables (container)
 
 - `OPENAI_API_KEY`
 - `MCP_TRANSPORT=streamable-http`
-- `MCP_HTTP_PATH=/mcp`
-- `PORT=8000`
+- `CHAT_STORE_BACKEND=r2` (for R2-backed storage)
+- `R2_BUCKET`, `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
 
-If using R2-backed chat history:
-- `CHAT_STORE_BACKEND=r2`
-- `R2_BUCKET`
-- `R2_ENDPOINT_URL`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_REGION` (optional, default `auto`)
-
-Optional tool-level guard:
-- `MCP_TOOL_TOKEN` (if set, callers must include `tool_token` argument in `chat_rlm_query`)
-
-### Build and run container locally
+#### Deploy Worker
 
 ```bash
-docker build -t deeprecurse-mcp:latest .
-docker run --rm -p 8000:8000 \
-  -e OPENAI_API_KEY=... \
-  -e MCP_TRANSPORT=streamable-http \
-  -e MCP_HTTP_PATH=/mcp \
-  deeprecurse-mcp:latest
-```
-
-## 3) Cloudflare Worker gateway
-
-Worker gateway code is in:
-- `cloudflare/worker-gateway`
-
-It provides:
-- `GET /healthz`
-- `POST /mcp` proxy to backend MCP URL
-- bearer auth at the edge via `MCP_GATEWAY_TOKEN`
-
-### Configure + deploy Worker
-
-```bash
-cd /Users/ryanhe/Ryan/TreeHacks/DeepRecurse/cloudflare/worker-gateway
+cd cloudflare/worker-gateway
 npm install
-npx wrangler secret put MCP_GATEWAY_TOKEN
-# edit wrangler.toml var BACKEND_MCP_URL to your container URL ending in /mcp
 npx wrangler deploy
 ```
 
-## 4) Connect Claude Code to remote MCP
-
-After Worker deploy, connect using your Worker URL:
+#### Connect Claude Code to remote MCP
 
 ```bash
 claude mcp add --transport http deeprecurse https://<your-worker-domain>/mcp
 ```
 
-If your Claude Code version supports custom headers, include:
-- `Authorization: Bearer <MCP_GATEWAY_TOKEN>`
+### 3. Auto-upload session transcripts (SessionEnd hook)
 
-## Request flow
+Add to your `.claude/settings.local.json`:
 
-1. Claude calls Worker at `/mcp`.
-2. Worker validates bearer token and proxies to backend MCP server.
-3. Backend tool `chat_rlm_query` loads shared context (file or R2).
-4. Backend runs `RLM_REPL.completion(context, query)`.
-5. Backend appends USER/ASSISTANT turn and returns answer.
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/scripts/session_end_upload.sh",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook script (`scripts/session_end_upload.sh`) parses the session JSONL and uploads it via the `upload_context` MCP tool. This happens automatically when a Claude Code session ends.
+
+## `upload_context` Tool
+
+### Parameters
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `transcript` | Yes (remote) | Full session transcript text |
+| `session_id` | Yes | Session identifier |
+| `thread_id` | No | Thread to store under (default: `transcripts`) |
+| `developer` | No | Developer name |
+
+### Local mode (stdio)
+
+When running locally, the tool can read session JSONL files directly from `~/.claude/projects/`:
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `session_id` | No | Session ID to upload (latest if omitted) |
+| `project_dir` | No | Project directory name under `~/.claude/projects/` |
+| `thread_id` | No | Thread to store under (default: `transcripts`) |
+
+## Request Flow
+
+### RLM Query
+1. Claude calls Worker at `POST /mcp` with `chat_rlm_query`
+2. Worker reads context from ChatStore Durable Object
+3. Worker forwards to RLM Container Durable Object
+4. RLM runs recursive reasoning with sub-LLMs
+5. Answer + turn appended to ChatStore
+
+### Session Upload
+1. SessionEnd hook fires → parses JSONL → calls `upload_context`
+2. Worker stores transcript in ChatStore Durable Object
+3. Next `chat_rlm_query` call sees the uploaded transcript as part of context
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `claude_tool_mcp/server.py` | Python MCP server (stdio + HTTP, file + R2 storage) |
+| `cloudflare/worker-gateway/src/index.ts` | Cloudflare Worker MCP gateway |
+| `rlm-minimal/` | RLM REPL implementation |

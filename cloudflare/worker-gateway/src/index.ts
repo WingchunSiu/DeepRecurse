@@ -24,6 +24,9 @@ interface ToolCallParams {
   arguments?: {
     query?: string;
     thread_id?: string;
+    transcript?: string;
+    session_id?: string;
+    developer?: string;
   };
 }
 
@@ -205,6 +208,21 @@ async function handleOneRpc(request: Request, env: Env, rpc: JsonRpcRequest): Pr
             required: ["query", "thread_id"],
           },
         },
+        {
+          name: "upload_context",
+          description:
+            "Upload a Claude Code session transcript to the shared context store. The transcript is stored under a thread so the RLM can reason over past sessions.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              transcript: { type: "string", description: "The full session transcript text to upload." },
+              session_id: { type: "string", description: "Session identifier." },
+              thread_id: { type: "string", description: "Thread to store the transcript under (default: 'transcripts')." },
+              developer: { type: "string", description: "Developer name/identifier." },
+            },
+            required: ["transcript", "session_id"],
+          },
+        },
       ],
     });
   }
@@ -212,31 +230,59 @@ async function handleOneRpc(request: Request, env: Env, rpc: JsonRpcRequest): Pr
   if (rpc.method === "tools/call") {
     const params = (rpc.params ?? {}) as ToolCallParams;
 
-    if (params.name !== "chat_rlm_query") {
-      return jsonRpcError(request, id, -32602, "Unknown tool");
+    if (params.name === "chat_rlm_query") {
+      const query = params.arguments?.query?.trim();
+      const threadId = params.arguments?.thread_id?.trim();
+      if (!query || !threadId) {
+        return jsonRpcError(request, id, -32602, "query and thread_id are required");
+      }
+
+      try {
+        const context = await readContext(env, threadId);
+        const answer = await callRlm(env, context, query, threadId);
+        const turnText = `${context ? "\n" : ""}USER: ${query}\nASSISTANT: ${answer}\n`;
+        await appendContext(env, threadId, turnText);
+
+        return jsonRpcResult(request, id, { content: [{ type: "text", text: answer }] });
+      } catch (err) {
+        return jsonRpcError(
+          request,
+          id,
+          -32000,
+          err instanceof Error ? err.message : "Unknown internal error",
+        );
+      }
     }
 
-    const query = params.arguments?.query?.trim();
-    const threadId = params.arguments?.thread_id?.trim();
-    if (!query || !threadId) {
-      return jsonRpcError(request, id, -32602, "query and thread_id are required");
+    if (params.name === "upload_context") {
+      const transcript = params.arguments?.transcript?.trim();
+      const sessionId = params.arguments?.session_id?.trim();
+      const threadId = params.arguments?.thread_id?.trim() || "transcripts";
+      const developer = params.arguments?.developer || "unknown";
+
+      if (!transcript || !sessionId) {
+        return jsonRpcError(request, id, -32602, "transcript and session_id are required");
+      }
+
+      try {
+        // Store under a combined key: thread_id + session_id
+        const storeKey = `${threadId}/${sessionId}`;
+        const turnText = `\n[SESSION UPLOAD] ${sessionId} (developer: ${developer})\n${transcript}\n`;
+        await appendContext(env, storeKey, turnText);
+
+        const msg = `Uploaded session ${sessionId} (developer=${developer}) to thread '${threadId}'.`;
+        return jsonRpcResult(request, id, { content: [{ type: "text", text: msg }] });
+      } catch (err) {
+        return jsonRpcError(
+          request,
+          id,
+          -32000,
+          err instanceof Error ? err.message : "Unknown internal error",
+        );
+      }
     }
 
-    try {
-      const context = await readContext(env, threadId);
-      const answer = await callRlm(env, context, query, threadId);
-      const turnText = `${context ? "\n" : ""}USER: ${query}\nASSISTANT: ${answer}\n`;
-      await appendContext(env, threadId, turnText);
-
-      return jsonRpcResult(request, id, { content: [{ type: "text", text: answer }] });
-    } catch (err) {
-      return jsonRpcError(
-        request,
-        id,
-        -32000,
-        err instanceof Error ? err.message : "Unknown internal error",
-      );
-    }
+    return jsonRpcError(request, id, -32602, "Unknown tool");
   }
 
   return jsonRpcError(request, id, -32601, "Method not found");
