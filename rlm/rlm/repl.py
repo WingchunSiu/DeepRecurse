@@ -7,7 +7,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from rlm import RLM
 
@@ -52,6 +52,93 @@ class Sub_RLM(RLM):
         raise NotImplementedError("Reset is not implemented for the Sub-RLM.")
 
 
+class ModalSandboxSubRLM(RLM):
+    """Sub-RLM client that runs each completion in a Modal Sandbox."""
+
+    def __init__(
+        self,
+        model: str = "gpt-5",
+        sandbox_app: Any = None,
+        sandbox_image: Any = None,
+        sandbox_volumes: Optional[dict[str, Any]] = None,
+        sandbox_workdir: Optional[str] = None,
+        env_file_path: Optional[str] = None,
+        timeout: int = 300,
+    ):
+        self.model = model
+        self.sandbox_app = sandbox_app
+        self.sandbox_image = sandbox_image
+        self.sandbox_volumes = sandbox_volumes or {}
+        self.sandbox_workdir = sandbox_workdir
+        self.env_file_path = env_file_path
+        self.timeout = timeout
+
+        if self.sandbox_image is None:
+            raise ValueError("sandbox_image is required for ModalSandboxSubRLM")
+        if not self.sandbox_volumes:
+            raise ValueError("sandbox_volumes is required for ModalSandboxSubRLM")
+
+    def completion(self, prompt) -> str:
+        try:
+            import modal
+        except Exception as exc:
+            return f"Error making LLM query in sandbox: failed to import modal ({exc})"
+
+        sandbox = None
+        try:
+            sandbox = modal.Sandbox.create(
+                app=self.sandbox_app,
+                image=self.sandbox_image,
+                volumes=self.sandbox_volumes,
+                workdir=self.sandbox_workdir,
+                timeout=self.timeout + 30,
+            )
+            process = sandbox.exec(
+                "python",
+                "-m",
+                "rlm.sub_rlm_worker",
+                timeout=self.timeout,
+            )
+
+            payload = {
+                "prompt": prompt,
+                "model": self.model,
+                "env_file_path": self.env_file_path,
+            }
+            process.stdin.write(json.dumps(payload).encode("utf-8"))
+            process.stdin.write_eof()
+            process.stdin.drain()
+
+            stdout = process.stdout.read()
+            stderr = process.stderr.read()
+            process.wait()
+
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+
+            if process.returncode != 0:
+                error_msg = stderr.strip() if stderr and stderr.strip() else "sandbox subprocess failed"
+                return f"Error making LLM query in sandbox: {error_msg}"
+
+            return stdout or ""
+        except Exception as exc:
+            return f"Error making LLM query in sandbox: {exc}"
+        finally:
+            if sandbox is not None:
+                try:
+                    sandbox.terminate()
+                except Exception:
+                    pass
+
+    def cost_summary(self) -> dict[str, float]:
+        raise NotImplementedError("Cost tracking is not implemented for the Sub-RLM.")
+
+    def reset(self):
+        raise NotImplementedError("Reset is not implemented for the Sub-RLM.")
+
+
 @dataclass
 class REPLResult:
     stdout: str
@@ -74,7 +161,15 @@ class REPLEnv:
         recursive_model: str = "gpt-5-mini",
         context_json: Optional[dict | list] = None,
         context_str: Optional[str] = None,
+        context_path: Optional[str] = None,
         setup_code: str = None,
+        sub_rlm_mode: str = "local",
+        sandbox_app: Any = None,
+        sandbox_image: Any = None,
+        sandbox_volumes: Optional[dict[str, Any]] = None,
+        sandbox_workdir: Optional[str] = None,
+        env_file_path: Optional[str] = None,
+        sub_rlm_timeout: int = 300,
     ):
         # Store the original working directory
         self.original_cwd = os.getcwd()
@@ -84,7 +179,18 @@ class REPLEnv:
 
 
         # Initialize minimal RLM / LM client. Change this to support more depths.
-        self.sub_rlm: RLM = Sub_RLM(model=recursive_model)
+        if sub_rlm_mode == "modal_sandbox":
+            self.sub_rlm = ModalSandboxSubRLM(
+                model=recursive_model,
+                sandbox_app=sandbox_app,
+                sandbox_image=sandbox_image,
+                sandbox_volumes=sandbox_volumes,
+                sandbox_workdir=sandbox_workdir,
+                env_file_path=env_file_path,
+                timeout=sub_rlm_timeout,
+            )
+        else:
+            self.sub_rlm = Sub_RLM(model=recursive_model)
         
         # Create safe globals with only string-safe built-ins
         self.globals = {
@@ -164,7 +270,7 @@ class REPLEnv:
         self.stdout_buffer = io.StringIO()
         self.stderr_buffer = io.StringIO()
 
-        self.load_context(context_json, context_str)
+        self.load_context(context_json, context_str, context_path)
         
         def llm_query(prompt: str) -> str:
             """Query the LLM with the given prompt."""
@@ -197,29 +303,41 @@ class REPLEnv:
         if setup_code:
             self.code_execution(setup_code)
     
-    def load_context(self, context_json: Optional[dict | list] = None, context_str: Optional[str] = None):
+    def load_context(
+        self,
+        context_json: Optional[dict | list] = None,
+        context_str: Optional[str] = None,
+        context_path: Optional[str] = None,
+    ):
+        file_context_path = context_path
+
         # Write context JSON to temporary directory using absolute (temp dir) path
         if context_json is not None:
-            context_path = os.path.join(self.temp_dir, "context.json")
-            with open(context_path, "w") as f:
+            json_context_path = os.path.join(self.temp_dir, "context.json")
+            with open(json_context_path, "w") as f:
                 json.dump(context_json, f, indent=2)
             context_code = (
                 f"import json\n"
-                f"with open(r'{context_path}', 'r') as f:\n"
+                f"with open(r'{json_context_path}', 'r') as f:\n"
                 f"    context = json.load(f)\n"
             )
             self.code_execution(context_code)
         
         if context_str is not None:
-            context_path = os.path.join(self.temp_dir, "context.txt")
-            with open(context_path, "w") as f:
+            text_context_path = os.path.join(self.temp_dir, "context.txt")
+            with open(text_context_path, "w") as f:
                 f.write(context_str)
             context_code = (
                 f"import os\n"
-                f"with open(r'{context_path}', 'r') as f:\n"
+                f"with open(r'{text_context_path}', 'r') as f:\n"
                 f"    context = f.read()\n"
             )
             self.code_execution(context_code)
+
+        if file_context_path is not None:
+            if not os.path.exists(file_context_path):
+                raise FileNotFoundError(f"context_path does not exist: {file_context_path}")
+            self.locals["context_path"] = file_context_path
     
     def __del__(self):
         """Clean up temporary directory when object is destroyed"""

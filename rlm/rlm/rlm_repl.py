@@ -2,7 +2,7 @@
 Simple Recursive Language Model (RLM) with REPL environment.
 """
 
-from typing import Dict, List, Optional, Any 
+from typing import Dict, List, Optional, Any
 
 from rlm import RLM
 from rlm.repl import REPLEnv
@@ -26,6 +26,13 @@ class RLM_REPL(RLM):
                  max_iterations: int = 20,
                  depth: int = 0,
                  enable_logging: bool = False,
+                 sub_rlm_mode: str = "local",
+                 sandbox_app: Any = None,
+                 sandbox_image: Any = None,
+                 sandbox_volumes: Optional[dict[str, Any]] = None,
+                 sandbox_workdir: Optional[str] = None,
+                 env_file_path: Optional[str] = None,
+                 sub_rlm_timeout: int = 300,
                  ):
         self.api_key = api_key
         self.model = model
@@ -36,6 +43,13 @@ class RLM_REPL(RLM):
         self.repl_env = None
         self.depth = depth # Unused in this version.
         self._max_iterations = max_iterations
+        self.sub_rlm_mode = sub_rlm_mode
+        self.sandbox_app = sandbox_app
+        self.sandbox_image = sandbox_image
+        self.sandbox_volumes = sandbox_volumes
+        self.sandbox_workdir = sandbox_workdir
+        self.env_file_path = env_file_path
+        self.sub_rlm_timeout = sub_rlm_timeout
         
         # Initialize colorful logger
         self.logger = ColorfulLogger(enabled=enable_logging)
@@ -44,7 +58,12 @@ class RLM_REPL(RLM):
         self.messages = [] # Initialize messages list
         self.query = None
     
-    def setup_context(self, context: List[str] | str | List[Dict[str, str]], query: Optional[str] = None):
+    def setup_context(
+        self,
+        context: Optional[List[str] | str | List[Dict[str, str]]] = None,
+        query: Optional[str] = None,
+        context_path: Optional[str] = None,
+    ):
         """
         Setup the context for the RLMClient.
 
@@ -63,28 +82,45 @@ class RLM_REPL(RLM):
         self.logger.log_initial_messages(self.messages)
         
         # Initialize REPL environment with context data
+        if context_path is None and context is None:
+            raise ValueError("Either context or context_path must be provided.")
+
         context_data, context_str = utils.convert_context_for_repl(context)
         
         self.repl_env = REPLEnv(
             context_json=context_data, 
             context_str=context_str, 
+            context_path=context_path,
             recursive_model=self.recursive_model,
+            sub_rlm_mode=self.sub_rlm_mode,
+            sandbox_app=self.sandbox_app,
+            sandbox_image=self.sandbox_image,
+            sandbox_volumes=self.sandbox_volumes,
+            sandbox_workdir=self.sandbox_workdir,
+            env_file_path=self.env_file_path,
+            sub_rlm_timeout=self.sub_rlm_timeout,
         )
         
         return self.messages
 
-    def completion(self, context: List[str] | str | List[Dict[str, str]], query: Optional[str] = None) -> str:
+    def completion(
+        self,
+        context: Optional[List[str] | str | List[Dict[str, str]]] = None,
+        query: Optional[str] = None,
+        context_path: Optional[str] = None,
+    ) -> str:
         """
         Given a query and a (potentially long) context, recursively call the LM
         to explore the context and provide an answer using a REPL environment.
         """
-        self.messages = self.setup_context(context, query)
+        self.messages = self.setup_context(context, query, context_path=context_path)
+        effective_query = self.query or DEFAULT_QUERY
         
         # Main loop runs for fixed # of root LM iterations
         for iteration in range(self._max_iterations):
             
             # Query root LM to interact with REPL environment
-            response = self.llm.completion(self.messages + [next_action_prompt(query, iteration)])
+            response = self.llm.completion(self.messages + [next_action_prompt(effective_query, iteration)])
             
             # Check for code blocks
             code_blocks = utils.find_code_blocks(response)
@@ -114,7 +150,7 @@ class RLM_REPL(RLM):
             
         # If we reach here, no final answer was found in any iteration
         print("No final answer found in any iteration")
-        self.messages.append(next_action_prompt(query, iteration, final_answer=True))
+        self.messages.append(next_action_prompt(effective_query, iteration, final_answer=True))
         final_answer = self.llm.completion(self.messages)
         self.logger.log_final_response(final_answer)
 
