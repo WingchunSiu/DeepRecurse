@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
 @dataclass
 class ChatConfig:
     chat_path: Path
-    server_module: str = "claude_skill_mcp.server"
+    server_module: str = "claude_tool_mcp.server"
 
 
 class MCPChatClient:
