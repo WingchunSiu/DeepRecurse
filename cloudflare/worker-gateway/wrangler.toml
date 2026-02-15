@@ -1,0 +1,25 @@
+name = "deeprecurse-mcp-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[observability]
+enabled = true
+
+[durable_objects]
+bindings = [
+  { name = "CHAT_STORE", class_name = "ChatStore" },
+  { name = "RLM_CONTAINER", class_name = "RlmContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatStore"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RlmContainer"]
+
+[[containers]]
+name = "tmp-containers-check-mycontainer"
+class_name = "RlmContainer"
+image = "registry.cloudflare.com/5b898cd6e789adc02e80577138bd82c7/deeprecurse-rlm@sha256:18c4ab5dc8b1f34b6bc9d9473c23204948ba146cc960ac7f1154b105e04f1602"
